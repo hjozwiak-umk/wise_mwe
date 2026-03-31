@@ -1,0 +1,27 @@
+[build-system]
+requires = ["hatchling>=1.22"]
+build-backend = "hatchling.build"
+
+[project]
+name = "wise_scattering"
+version = "1.0.0"
+description = "Minimal Working Example of the WISE algorithm for CO+He quantum scattering."
+readme = "README.md"
+requires-python = ">=3.10"
+authors = [{name = "Hubert Jozwiak", email = "hubert.jozwiak@umk.pl"}]
+license = {text = "MIT"}
+keywords = ["quantum", "scattering", "WISE", "Born series"]
+
+dependencies = [
+    "cffi==1.17.1",
+    "numba==0.60.0",
+    "numpy==1.26.4",
+    "scipy==1.11.4",
+    "pywigxjpf"
+]
+
+[project.scripts]
+run_wise = "wise_scattering.run_wise_scattering:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/wise_scattering"]

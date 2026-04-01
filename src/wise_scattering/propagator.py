@@ -4,17 +4,32 @@ from numba import njit
 @njit(cache=True)
 def renormalized_numerov(W_r: np.ndarray, step: float, direction: int, initial_ratio: complex) -> np.ndarray:
     """
-    1D Renormalized Numerov propagator solving y'' = W(r)y.
-    
-    If direction == 1 (outwards): Computes Q_n = y_{n-1} / y_n
-    If direction == -1 (inwards): Computes Q_n = y_{n+1} / y_n
+    1D Renormalized Numerov propagator for solving the single-channel radial Schrödinger equation.
+
+    Parameters
+    ----------
+    W_r : np.ndarray
+        The effective potential computed for all the N grid points:
+        W(r) = 2μ*V(r) - k^2 + l(l+1)/r^2. Shape: (N,).
+    step : float
+        The spatial grid step size (h).
+    direction : int
+        Propagation direction flag. 
+        `1` for outward propagation (computes Q^x_n = x_{n-1} / x_n).
+        `-1` for inward propagation (computes Q^y_n = y_{n+1} / y_n).
+    initial_ratio : complex
+        The boundary condition for the ratio at the start of the propagation.
+        For outward: exactly 0.0 at the origin.
+        For inward: the analytical ratio y(r_max) / y(r_max - h).
+
+    Returns
+    -------
+    np.ndarray
+        An array of physical wavefunction ratios Q of shape (N,).
     """
     steps = len(W_r)
     Q = np.zeros(steps, dtype=np.complex128)
     
-    # Standard Numerov F_n factor
-    # Since y'' = W_r * y, the coupling matrix equivalent is -W_r
-    # Therefore: F_n = 1 + (h^2 / 12) * (-W_r)
     F = 1.0 - (step**2 / 12.0) * W_r
     
     if direction == 1:

@@ -1,3 +1,10 @@
+"""
+WISE Scattering Minimal Working Example (MWE)
+---------------------------------------------
+This script is the main entry point for demonstrating the matrix-free 
+Weinberg-regularized Iterative Series Expansion (WISE) framework for the example
+Atom-Diatom scattering (CO+He) system.
+"""
 import numpy as np
 import time
 from scipy.sparse.linalg import eigs, LinearOperator
@@ -10,6 +17,19 @@ from wise_scattering.propagator import renormalized_numerov
 from wise_scattering.wise_core import apply_K_matvec, apply_KH_matvec, apply_K_P
 
 def main():
+    """
+    Executes the full pipeline.
+    
+    Steps:
+    1. System and Grid Initialization.
+    2. Basis Set Generation (Space-Fixed representation).
+    3. Precomputation of the potential centrifugal terms in the sparse matrix format.
+    4. Generation of Green's function from solutions of the single-channel problems (Renormalized Numerov).
+    5. Construction of the matrix-free operators.
+    6. Determination of the largest Weinberg eigenvalues of the scattering kernel.
+    7. Regularized Born Series.
+    8. S-Matrix column evaluation and convergence checking.
+    """
     print("Starting WISE scattering MWE for CO+He...")
 
     # Initialize Wigner symbols
@@ -40,13 +60,13 @@ def main():
     incoming_l = 0
 
     # Solver parameters
-    n_eigs = 30
+    n_eigs = 20
     conv_radius = 0.95
     max_iter = 1000
     conv_threshold = 1e-6
 
     # Grid setup
-    r_min, r_max, step = 3.0, 20.0, 0.05
+    r_min, r_max, step = 3.0, 20.0, 0.01
     grid = np.arange(r_min, r_max + step, step)
     n_points = len(grid)
     
@@ -152,7 +172,7 @@ def main():
         # Enforce biorthogonality: M_ij = <v_i | u_j>
         overlap_matrix = np.matmul(v_vecs.T.conj(), right_vecs[:, bad_indices])
         inverse_overlap = np.linalg.inv(overlap_matrix)
-        v_T = (v_vecs @ inverse_overlap.conj().T).T
+        v_T = np.ascontiguousarray((v_vecs @ inverse_overlap.conj().T).T)
     else:
         matched_eigvals, u_T, v_T = [], [], []
 
@@ -222,7 +242,7 @@ def main():
             
             if delta_S < conv_threshold:
                 converged = True
-                print(f"Converged securely in {it + 1} iterations!")
+                print(f"S-matrix converged within {conv_threshold:.2e} in {it + 1} iterations.")
                 break
                 
         S_old = S_current

@@ -11,14 +11,37 @@ nb_wig3jj = pywigxjpf_ffi.lib.wig3jj
 nb_wig6jj = pywigxjpf_ffi.lib.wig6jj
 
 def init_wigner_symbols(size=2000, max_wig=9):
-    """Allocates memory for the pywigxjpf C-backend."""
+    """
+    Allocates memory for the pywigxjpf C-backend to compute Wigner symbols.
+    
+    Parameters
+    ----------
+    size : int, optional
+        Size of the precomputed factorial tables.
+    max_wig : int, optional
+        Maximum angular momentum value expected in the calculation.
+    """
     wig.wig_table_init(size, max_wig)
     wig.wig_temp_init(size)
 
 # --- 1. Utility Functions ---
 @njit(cache=True)
 def matrix_to_flat(i, j):
-    """Maps 2D symmetric indices (i >= j) to a 1D flattened lower-triangle array."""
+    """
+    Maps 2D symmetric matrix indices to a 1D flattened lower-triangle array index.
+
+    Parameters
+    ----------
+    i : int
+        Row index.
+    j : int
+        Column index.
+
+    Returns
+    -------
+    int
+        The 1D flattened index corresponding to the lower triangle position.
+    """
     if i < j:
         i, j = j, i
     return (i * (i + 1)) // 2 + j
@@ -26,7 +49,17 @@ def matrix_to_flat(i, j):
 @njit(cache=True)
 def flat_to_matrix_coords(pos):
     """
-    Inverse of matrix_to_flat. 
+    Inverse of matrix_to_flat. Recovers the 2D matrix indices from a 1D flattened index.
+
+    Parameters
+    ----------
+    pos : int
+        The 1D flattened index.
+
+    Returns
+    -------
+    tuple[int, int]
+        The (row, column) indices of the symmetric matrix.
     """
     row = int(np.floor((np.sqrt(8 * pos + 1) - 1) / 2))
     col = pos - (row * (row + 1)) // 2
@@ -35,8 +68,27 @@ def flat_to_matrix_coords(pos):
 # --- 2. Channel Generation ---
 def generate_space_fixed_channels(total_J: int, parity: int, j_max: int, B_rot: float):
     """
-    Generates open and closed space-fixed channels for an Atom + Rigid Rotor system.
-    Parity for rigid rotor state j is (-1)^j. Total parity is (-1)^(j+l).
+    Generates scattering channels for an Atom + Rigid Rotor system (space-fixed representation).
+
+    Builds the basis set $|j, l\\rangle$ constrained by angular momentum coupling 
+    and strict parity conservation.
+
+    Parameters
+    ----------
+    total_J : int
+        The total angular momentum of the collision complex.
+    parity : int
+        The total spatial parity of the system (+1 or -1).
+    j_max : int
+        The maximum rigid rotor angular momentum state to include in the basis.
+    B_rot : float
+        The rotational constant of the rigid rotor (in cm^-1 or target energy units).
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray]
+        Arrays containing the rotor angular momentum (j), orbital angular 
+        momentum (l), and asymptotic channel energies (E) respectively.
     """
     channels = []
     
@@ -63,7 +115,26 @@ def generate_space_fixed_channels(total_J: int, parity: int, j_max: int, B_rot: 
 # --- 3. Potential Matrix Precomputation ---
 @njit(cache=True)
 def get_allowed_lambdas_jit(j_bra, l_bra, j_ket, l_ket, lambda_max):
-    """Determines which multipole terms (lambda) contribute to the coupling."""
+    """
+    Determines which Legendre multipole terms (lambda) non-trivially couple two scattering channels.
+    
+    Enforces angular momentum triangle rules and parity selection rules for the 
+    intermolecular potential expansion.
+
+    Parameters
+    ----------
+    j_bra, l_bra : int
+        Angular momentum quantum numbers of the bra state.
+    j_ket, l_ket : int
+        Angular momentum quantum numbers of the ket state.
+    lambda_max : int
+        The truncation limit of the potential multipole expansion.
+
+    Returns
+    -------
+    np.ndarray
+        An array of allowed lambda integers.
+    """
     low_j  = abs(j_bra - j_ket)
     high_j = j_bra + j_ket
     low_l  = abs(l_bra - l_ket)
@@ -87,7 +158,25 @@ def get_allowed_lambdas_jit(j_bra, l_bra, j_ket, l_ket, lambda_max):
 
 @njit(fastmath=True)
 def compute_coefficients_jit(J, j_bra, l_bra, j_ket, l_ket, lambdas):
-    """Evaluates the exact angular coupling coefficients using 3-j and 6-j symbols."""
+    """
+    Evaluates the exact angular coupling coefficients using Wigner 3-j and 6-j symbols.
+
+    Parameters
+    ----------
+    J : int
+        Total angular momentum.
+    j_bra, l_bra : int
+        Quantum numbers of the bra state.
+    j_ket, l_ket : int
+        Quantum numbers of the ket state.
+    lambdas : np.ndarray
+        Array of allowed multipole expansion indices.
+
+    Returns
+    -------
+    np.ndarray
+        The angular coupling coefficients corresponding to each allowed lambda.
+    """
     n = lambdas.shape[0]
     coefficients = np.empty(n, dtype=np.float64)
 
@@ -117,10 +206,29 @@ def compute_coefficients_jit(J, j_bra, l_bra, j_ket, l_ket, lambdas):
     
     return coefficients
 
-@njit(nopython=True, fastmath=True)
+@njit(fastmath=True)
 def precompute_potential_sparsity(channel_j, channel_l, J, lambda_max, offdiag_only=True):
     """
-    Scans the basis and creates the sparse mapping arrays required for fast matrix-vector products.
+    Scans the basis set and precomputes the sparse memory mapping for the potential matrix.
+
+    Parameters
+    ----------
+    channel_j, channel_l : np.ndarray
+        The basis set quantum numbers.
+    J : int
+        Total angular momentum.
+    lambda_max : int
+        Maximum multipole expansion term.
+    offdiag_only : bool, optional
+        If True, only maps the off-diagonal elements (used for matrix-free sweeps).
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]
+        - flat_positions: 1D matrix coordinates for the non-zero couplings.
+        - terms_per_element: Number of lambda terms contributing to each coordinate.
+        - lambda_indices: The specific lambda values for each term.
+        - coefficients: The computed angular coefficients.
     """
     num_channels = channel_j.shape[0]
 
@@ -172,6 +280,22 @@ def precompute_potential_sparsity(channel_j, channel_l, J, lambda_max, offdiag_o
 # --- 4. Centrifugal Matrix Precomputation ---
 @njit(cache=True, fastmath=True)
 def precompute_centrifugal_sparsity(channel_j, channel_l, offdiag_only=True):
+    """
+    Precomputes the sparse memory mapping for the purely diagonal centrifugal potential.
+
+    Parameters
+    ----------
+    channel_j, channel_l : np.ndarray
+        The basis set quantum numbers.
+    offdiag_only : bool, optional
+        If True, only maps off-diagonal elements (which are always zero for centrifugal terms).
+
+    Returns
+    -------
+    tuple[np.ndarray, np.ndarray]
+        - flat_positions: 1D matrix coordinates.
+        - coefficients: The evaluated l(l+1) terms.
+    """
     num_channels = channel_j.shape[0]
     
     nz_count = 0
@@ -199,7 +323,23 @@ def precompute_centrifugal_sparsity(channel_j, channel_l, offdiag_only=True):
 @njit(fastmath=True)
 def compute_diagonal_potential_jit(J, j_channel, l_channel, lambda_max, radial_pot_matrix):
     """
-    Computes the diagonal interaction potential V_ii(r) for a single channel.
+    Computes the diagonal interaction potential V_ii(r) for a single channel across the grid.
+
+    Parameters
+    ----------
+    J : int
+        Total angular momentum.
+    j_channel, l_channel : int
+        Quantum numbers defining the target channel.
+    lambda_max : int
+        Maximum multipole expansion term.
+    radial_pot_matrix : np.ndarray
+        The interpolated 2D dense radial potential matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The exact diagonal interaction potential trace evaluated across the radial grid.
     """
     n_points = radial_pot_matrix.shape[0]
     V_ii = np.zeros(n_points, dtype=np.float64)
@@ -225,16 +365,29 @@ def compute_diagonal_potential_jit(J, j_channel, l_channel, lambda_max, radial_p
 def load_radial_potential(filepath: str, r_grid: np.ndarray, lambda_max: int, 
                           header_lines: int = 16, points_per_lambda: int = 9941):
     """
-    Reads CO-He radial potential terms from a file, interpolates them onto the solver's radial grid,
-    and returns a dense 2D array.
-    
-    Parameters:
-    - filepath: Path to the .dat file.
-    - r_grid: The 1D NumPy array of radial grid points used by the solver (in Bohr).
-    - lambda_max: The maximum lambda (Legendre term) required by the basis set.
-    
-    Returns:
-    - V_matrix: A 2D array of shape (len(r_grid), lambda_max + 1) in atomic units (Hartree).
+    Reads CO-He radial potential terms from a file and interpolates them onto the solver's grid.
+    The potential terms were computed from the He+CO PES of Peterson and McBane 
+    [J. Chem. Phys. 123 (8) (2005), http://dx.doi.org/10.1063/1.1947194.]
+    as explained in the Methods section.
+
+    Parameters
+    ----------
+    filepath : str
+        Path to the multi-column interaction potential .dat file.
+    r_grid : np.ndarray
+        The 1D NumPy array of radial grid points used by the solver (in Bohr).
+    lambda_max : int
+        The maximum lambda (Legendre term) required by the chosen basis set.
+    header_lines : int, optional
+        Number of header lines to skip at the top of the file.
+    points_per_lambda : int, optional
+        The number of data points provided in the file per lambda term block.
+        
+    Returns
+    -------
+    np.ndarray
+        A 2D dense array of shape (len(r_grid), lambda_max + 1) representing 
+        the radial potential V(r) evaluated in atomic units (Hartree).
     """
     HARTREE_TO_INVERSE_CM = 2.1947463136314e5
     

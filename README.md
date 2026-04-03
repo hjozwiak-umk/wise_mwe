@@ -1,3 +1,5 @@
+[![DOI](https://zenodo.org/badge/1197797092.svg)](https://doi.org/10.5281/zenodo.19395019)
+
 # WISE Scattering: Minimal Working Example
 
 This repository contains a standalone Minimal Working Example (MWE) of the **WISE (Weinberg-regularized Iterative Series Expansion)** algorithm for quantum scattering, as described in [the WISE manuscript](https://arxiv.org/abs/2601.01159).

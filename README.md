@@ -80,3 +80,7 @@ The `run_wise_scattering.py` script is designed to be easily modified. You can o
 * **Solver Settings:**
   * `conv_radius`: Controls the eigenvalue cutoff for the Schmidt projection (default is `0.95`). Values < 1.0 ensure unconditional convergence.
   * `n_eigs`: The number of eigenvalues ARPACK searches for. If the solver diverges, increase this number to capture more of the divergent subspace.
+
+## Funding
+
+This work was supported by the National Science Centre in Poland through Project No. 2024/53/N/ST2/02090 and by the NSF CAREER award No. PHY-2045681.

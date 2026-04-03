@@ -253,7 +253,7 @@ def main():
 
     # Final Output
     print("\n--- Schmidt Process Completed ---")
-    print(f"Total solver time: {t1 - t0:.2f} s")
+    print(f"The iterative solution converged in {t1 - t0:.2f} s")
     print("\nFinal S-matrix probabilities (S_ij):")
     for j in range(n_channels):
         if k_sq_all[j] > 0:

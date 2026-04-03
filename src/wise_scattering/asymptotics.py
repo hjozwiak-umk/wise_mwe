@@ -1,5 +1,5 @@
 import numpy as np
-from scipy.special import spherical_jn, spherical_yn, kv, iv
+from scipy.special import spherical_jn, spherical_yn, kve, ive
 
 def riccati_bessel(k, l, r):
     """
@@ -22,9 +22,9 @@ def riccati_bessel(k, l, r):
     kr = k * r
     return kr * spherical_jn(l, kr), kr * spherical_yn(l, kr)
 
-def modified_bessel_kv(kappa, l, r):
+def modified_bessel_kve(kappa, l, r):
     """
-    Computes the scaled modified spherical Bessel function of the second kind.
+    Computes the scaled, exponentially weighted modified spherical Bessel function of the second kind.
     Used for asymptotically closed channels. 
     Based on scipy's modified Bessel function of the second kind, with a sqrt(r) scaling to match the asymptotic form of the radial wavefunction.
 
@@ -40,13 +40,13 @@ def modified_bessel_kv(kappa, l, r):
     Returns
     -------
     float
-        The modified Bessel function value at kappa * r.
+        The exponentially weighted modified Bessel function value at kappa * r.
     """
-    return np.sqrt(r) * kv(l + 0.5, kappa * r)
+    return np.sqrt(r) * kve(l + 0.5, kappa * r)
 
-def modified_bessel_iv(kappa, l, r):
+def modified_bessel_ive(kappa, l, r):
     """
-    Computes the scaled modified spherical Bessel function of the first kind.
+    Computes the scaled, exponentially weighted modified spherical Bessel function of the first kind.
     Used for matching closed-channel Green's functions.
     Based on scipy's modified Bessel function of the first kind, with a sqrt(r) scaling to match the asymptotic form of the radial wavefunction.
 
@@ -62,9 +62,9 @@ def modified_bessel_iv(kappa, l, r):
     Returns
     -------
     float
-        The modified Bessel function value at kappa * r.
+        The exponentially weighted modified Bessel function value at kappa * r.
     """
-    return np.sqrt(r) * iv(l + 0.5, kappa * r)
+    return np.sqrt(r) * ive(l + 0.5, kappa * r)
 
 def get_inward_initial_ratio(k_sq, l, r_max, step):
     """
@@ -98,7 +98,7 @@ def get_inward_initial_ratio(k_sq, l, r_max, step):
         return (j_N + 1j * y_N) / (j_Nm1 + 1j * y_Nm1)
     else:
         kappa = np.sqrt(np.abs(k_sq))
-        return modified_bessel_kv(kappa, l, r_N) / modified_bessel_kv(kappa, l, r_Nm1)
+        return modified_bessel_kve(kappa, l, r_N) / modified_bessel_kve(kappa, l, r_Nm1) * np.exp(-kappa * step)
 
 def process_asymptotics_and_greens(k_sq, l, grid, Q_out, Q_in):
     """
@@ -134,6 +134,7 @@ def process_asymptotics_and_greens(k_sq, l, grid, Q_out, Q_in):
 
     r1 = grid[-2]
     r2 = grid[-1]
+    step = r2 - r1
     Q_end = Q_out[-1] # Q_out[-1] is y(r1) / y(r2)
 
     if k_sq > 0:
@@ -157,18 +158,19 @@ def process_asymptotics_and_greens(k_sq, l, grid, Q_out, Q_in):
 
     else:
         kappa = np.sqrt(np.abs(k_sq))
-        i1 = modified_bessel_iv(kappa, l, r1)
-        i2 = modified_bessel_iv(kappa, l, r2)
-        k1 = modified_bessel_kv(kappa, l, r1)
-        k2 = modified_bessel_kv(kappa, l, r2)
+        i1_scaled = modified_bessel_ive(kappa, l, r1)
+        i2_scaled = modified_bessel_ive(kappa, l, r2)
+        k1_scaled = modified_bessel_kve(kappa, l, r1)
+        k2_scaled = modified_bessel_kve(kappa, l, r2)
 
-        iv_ratio = i1 / i2
-        kv_ratio = k1 / k2
+        # Reconstruct the exact ratios using the extracted exponential weights
+        iv_ratio = (i1_scaled / i2_scaled) * np.exp(-kappa * step)
+        kv_ratio = (k1_scaled / k2_scaled) * np.exp(kappa * step)
 
         # 1. G_ii at r_max
         numerator = Q_end - iv_ratio
         denominator = Q_end - kv_ratio
-        G_ii[-1] = - (1.0 - numerator / denominator) * i2 * k2
+        G_ii[-1] = - (1.0 - numerator / denominator) * i2_scaled * k2_scaled
 
     # Backpropagate G_ii directly from the ratios for BOTH open and closed channels.
     for i in range(n_points - 1, 0, -1):

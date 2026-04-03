@@ -1,4 +1,4 @@
-[![DOI](https://zenodo.org/badge/1197797092.svg)](https://doi.org/10.5281/zenodo.19395019)
+[![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19395019.svg)](https://doi.org/10.5281/zenodo.19395019)
 
 # WISE Scattering: Minimal Working Example
 

@@ -22,6 +22,7 @@ dependencies = [
 
 [project.scripts]
 run_wise = "wise_scattering.run_wise_scattering:main"
+run_contour = "wise_scattering.run_contour_scattering:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/wise_scattering"]

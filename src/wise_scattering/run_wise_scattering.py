@@ -52,7 +52,7 @@ def main():
     E_total = E_col_cm1 / HARTREE_TO_INVERSE_CM
     J_tot = 0
     parity = 1
-    j_max = 6
+    j_max = 2
     lambda_max = 20
 
     # Target incoming channel

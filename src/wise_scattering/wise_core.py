@@ -1,6 +1,7 @@
 from numba import njit, prange
 import numpy as np
 from wise_scattering.physics_utilities import flat_to_matrix_coords
+from scipy.sparse.linalg import bicgstab, LinearOperator, gmres
 
 @njit(cache=True)
 def construct_coupling_matrix_jit(r_val, prefactor, n_channels,
@@ -268,3 +269,54 @@ def apply_K_P(psi_vec, eigvals, u_T, v_T):
         coeff = np.vdot(v_T[i], psi_contig)
         res += eigvals[i] * u_T[i] * coeff
     return res
+
+class SolverCounter:
+    """A simple callback to tally BiCGSTAB iterations."""
+    def __init__(self):
+        self.n_iters = 0
+    def __call__(self, xk=None):
+        self.n_iters += 1
+
+def apply_contour_projector(v, K_op, R_out, R_in, N_q, tol=1e-5):
+    """Stage 1A: Applies the spectral projector P_D using contour integration."""
+    theta = np.linspace(0, 2 * np.pi, N_q, endpoint=False)
+    z_out, z_in = R_out * np.exp(1j * theta), R_in * np.exp(1j * theta)
+    P_v = np.zeros_like(v, dtype=np.complex128)
+    
+    counter = SolverCounter()
+    
+    for k in range(N_q):
+        A = LinearOperator(K_op.shape, matvec=lambda x, z=z_out[k]: z * x - K_op.matvec(x), dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        P_v += (z_out[k] / N_q) * y
+
+    for k in range(N_q):
+        A = LinearOperator(K_op.shape, matvec=lambda x, z=z_in[k]: z * x - K_op.matvec(x), dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        P_v -= (z_in[k] / N_q) * y
+        
+    return P_v, counter.n_iters
+
+def apply_contour_correction(v, K_op, R_out, R_in, N_q, tol=1e-5):
+    """Stage 2: Evaluates the final wavefunction correction z/(1-z)."""
+    theta = np.linspace(0, 2 * np.pi, N_q, endpoint=False)
+    z_out, z_in = R_out * np.exp(1j * theta), R_in * np.exp(1j * theta)
+    correction = np.zeros_like(v, dtype=np.complex128)
+    
+    counter = SolverCounter()
+    
+    for k in range(N_q):
+        z = z_out[k]
+        A = LinearOperator(K_op.shape, matvec=lambda x, z=z: z * x - K_op.matvec(x), dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        weight = (z / N_q) * (z / (1.0 - z))
+        correction += weight * y
+
+    for k in range(N_q):
+        z = z_in[k]
+        A = LinearOperator(K_op.shape, matvec=lambda x, z=z: z * x - K_op.matvec(x), dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        weight = (z / N_q) * (z / (1.0 - z))
+        correction -= weight * y
+        
+    return correction, counter.n_iters

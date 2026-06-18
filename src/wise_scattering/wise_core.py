@@ -277,46 +277,80 @@ class SolverCounter:
     def __call__(self, xk=None):
         self.n_iters += 1
 
-def apply_contour_projector(v, K_op, R_out, R_in, N_q, tol=1e-5):
-    """Stage 1A: Applies the spectral projector P_D using contour integration."""
-    theta = np.linspace(0, 2 * np.pi, N_q, endpoint=False)
-    z_out, z_in = R_out * np.exp(1j * theta), R_in * np.exp(1j * theta)
-    P_v = np.zeros_like(v, dtype=np.complex128)
+@njit
+def apply_shifted_K_matvec(v, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data):
+    """
+    Computes (z * I - K) * v entirely within JIT to avoid Python memory allocation overhead.
+    """
+    # 1. Compute the standard K * v
+    K_v = apply_K_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
     
+    # 2. Apply the shift and subtract in a single loop (no temporary arrays)
+    result = np.empty_like(v)
+    for i in range(len(v)):
+        result[i] = z * v[i] - K_v[i]
+        
+    return result
+
+def apply_contour_projector(v, K_op_shape, R_out, R_in, N_q_out, N_q_in, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, tol=1e-5, x_c_in=0.0):
+    theta_out = np.linspace(0, 2 * np.pi, N_q_out, endpoint=False)
+    d_theta = (2 * np.pi) / N_q_in
+    theta_in = np.linspace(0, 2 * np.pi, N_q_in, endpoint=False) + (d_theta / 2.0) # The Golden Shift
+    
+    z_out = R_out * np.exp(1j * theta_out)
+    z_in = x_c_in + R_in * np.exp(1j * theta_in) # Applies the shift (0.0 by default)
+    
+    P_v = np.zeros_like(v, dtype=np.complex128)
     counter = SolverCounter()
     
-    for k in range(N_q):
-        A = LinearOperator(K_op.shape, matvec=lambda x, z=z_out[k]: z * x - K_op.matvec(x), dtype=np.complex128)
+    for k in range(N_q_out):
+        z_curr = z_out[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
         y, _ = bicgstab(A, v, tol=tol, callback=counter)
-        P_v += (z_out[k] / N_q) * y
+        P_v += (z_curr / N_q_out) * y
 
-    for k in range(N_q):
-        A = LinearOperator(K_op.shape, matvec=lambda x, z=z_in[k]: z * x - K_op.matvec(x), dtype=np.complex128)
+    for k in range(N_q_in):
+        z_curr = z_in[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
         y, _ = bicgstab(A, v, tol=tol, callback=counter)
-        P_v -= (z_in[k] / N_q) * y
+        # CRITICAL FIX: The differential weight now accounts for the shifted center
+        P_v -= ((z_curr - x_c_in) / N_q_in) * y
         
     return P_v, counter.n_iters
 
-def apply_contour_correction(v, K_op, R_out, R_in, N_q, tol=1e-5):
+def apply_contour_correction(v, K_op_shape, R_out, R_in, N_q_out, N_q_in, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, tol=1e-5, x_c_in=0.0):
     """Stage 2: Evaluates the final wavefunction correction z/(1-z)."""
-    theta = np.linspace(0, 2 * np.pi, N_q, endpoint=False)
-    z_out, z_in = R_out * np.exp(1j * theta), R_in * np.exp(1j * theta)
-    correction = np.zeros_like(v, dtype=np.complex128)
+    theta_out = np.linspace(0, 2 * np.pi, N_q_out, endpoint=False)
+    d_theta = (2 * np.pi) / N_q_in
+    theta_in = np.linspace(0, 2 * np.pi, N_q_in, endpoint=False) + (d_theta / 2.0) # The Golden Shift
     
+    z_out = R_out * np.exp(1j * theta_out)
+    z_in = x_c_in + R_in * np.exp(1j * theta_in) # Apply the shift
+    
+    correction = np.zeros_like(v, dtype=np.complex128)
     counter = SolverCounter()
     
-    for k in range(N_q):
-        z = z_out[k]
-        A = LinearOperator(K_op.shape, matvec=lambda x, z=z: z * x - K_op.matvec(x), dtype=np.complex128)
+    for k in range(N_q_out):
+        z_curr = z_out[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
         y, _ = bicgstab(A, v, tol=tol, callback=counter)
-        weight = (z / N_q) * (z / (1.0 - z))
+        weight = (z_curr / N_q_out) * (z_curr / (1.0 - z_curr))
         correction += weight * y
 
-    for k in range(N_q):
-        z = z_in[k]
-        A = LinearOperator(K_op.shape, matvec=lambda x, z=z: z * x - K_op.matvec(x), dtype=np.complex128)
+    for k in range(N_q_in):
+        z_curr = z_in[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
         y, _ = bicgstab(A, v, tol=tol, callback=counter)
-        weight = (z / N_q) * (z / (1.0 - z))
+        # CRITICAL FIX: The differential geometric weight (z_curr - x_c_in) combined with the physical weight z/(1-z)
+        weight = ((z_curr - x_c_in) / N_q_in) * (z_curr / (1.0 - z_curr))
         correction -= weight * y
         
     return correction, counter.n_iters

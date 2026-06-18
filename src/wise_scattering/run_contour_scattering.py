@@ -43,12 +43,14 @@ def main():
 
     # CONTOUR SETTINGS
     # Stage 1: should enclose all diverging eigenvalues, does not worry about z=1
-    N_q_1 = 32 # Number of quadrature points for Stage 1
-    R_in_1 = 1.002 # Inner radius for Stage 1 contour
+    N_q_outer = 31 # the outer ring can be treated with a limited number of points
+    N_q_1 = 50 # Number of quadrature points for Stage 1
+    R_in_1 = 0.95 # Inner radius for Stage 1 contour
     
     # Stage 2: must avoid z=1 but catch divergent states.
-    N_q_2 = 23200  
-    R_in_2 = 1.002
+    N_q_2 = 50  
+    R_in_2 = 1
+    x_c_2 = 0.1 # we can shift the center of the ring to avoid singularity at z = 1
     # ----------------------------------
 
     grid = np.arange(3.0, 20.0 + 0.01, 0.01)
@@ -99,6 +101,7 @@ def main():
 
     def matvec(v): return apply_K_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
     def rmatvec(v): return apply_KH_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+    K_op_shape = (n_channels * n_points, n_channels * n_points)
     K_op = LinearOperator((n_channels * n_points, n_channels * n_points), matvec=matvec, rmatvec=rmatvec, dtype=np.complex128)
 
     print("\n--- Stage 0: Contour Geometry ---")
@@ -106,9 +109,9 @@ def main():
     val_max, _ = eigs(K_op, k=1, which='LM')
     eta_max = np.abs(val_max[0])
     R_out = eta_max + outer_delta
-    print(f"Found eta_max = {eta_max:.4f}")
+    print(f"Found eta_max = {eta_max:.4f}, N_q_outer = {N_q_outer}")
     print(f"Stage 1 Bounds: R_in = {R_in_1:.3f}, R_out = {R_out:.3f} (N_q = {N_q_1})")
-    print(f"Stage 2 Bounds: R_in = {R_in_2:.3f}, R_out = {R_out:.3f} (N_q = {N_q_2})")
+    print(f"Stage 2 Bounds: R_in = {R_in_2:.3f}, R_out = {R_out:.3f} (N_q = {N_q_2}, x_c_in = {x_c_2})")
 
     print("\n--- Stage 1: Regularized Born Series ---")
     u_R = u_source_symm.copy()
@@ -119,7 +122,11 @@ def main():
     for it in range(max_iter):
         u_R_old = u_R.copy()
         
-        P_D_y, inner_iters = apply_contour_projector(u_R_old, K_op, R_out, R_in_1, N_q_1, tol=solver_tol)
+        P_D_y, inner_iters = apply_contour_projector(
+            u_R_old, K_op_shape, R_out, R_in_1, N_q_outer, N_q_1, 
+            grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, 
+            tol=solver_tol
+        )
         total_inner_iters += inner_iters
 
         u_diff = u_R_old - P_D_y
@@ -137,7 +144,11 @@ def main():
     print("\n--- Stage 2: Contour Wavefunction Correction ---")
     t_corr_start = time.perf_counter()
     
-    full_correction, stage2_iters = apply_contour_correction(u_R, K_op, R_out, R_in_2, N_q_2, tol=solver_tol)
+    full_correction, stage2_iters = apply_contour_correction(
+        u_R, K_op_shape, R_out, R_in_2, N_q_outer, N_q_2, 
+        grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, 
+        tol=solver_tol, x_c_in=x_c_2
+    )
     psi_final_symm = u_R + full_correction
     print(f"Correction computed in {time.perf_counter() - t_corr_start:.2f} s | BiCGSTAB iters: {stage2_iters}")
 

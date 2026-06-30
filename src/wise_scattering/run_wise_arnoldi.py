@@ -44,7 +44,6 @@ def main():
     MASS_HE = 4.002602 * ATOMIC_MASS_UNIT_TO_ELECTRON_MASS  # a.m.u. converted to a.u. of mass (electron masses)
     REDUCED_MASS = (MASS_CO * MASS_HE) / (MASS_CO + MASS_HE)
     B_ROT = 1.922521 / HARTREE_TO_INVERSE_CM          # cm-1 converted to Hartree
-
     PREFACTOR = 2.0 * REDUCED_MASS
 
     # Target collision & algorithm setup
@@ -120,7 +119,7 @@ def main():
         # Inward Propagation (Irregular ratio)
         Q_in = renormalized_numerov(W_r, step, direction=-1, initial_ratio=ratio_inward_start)
         
-        # Extract Physics directly from ratios
+        # Extract phase shift, wavefunction, and the diagonal Green's function
         delta, u_reg_all[c, :], G_diag[c, :] = process_asymptotics_and_greens(k_sq, l_c, grid, Q_out, Q_in)
         phase_shifts[c] = delta
         R_ratio[c, :] = Q_out + 0.0j

@@ -1,6 +1,7 @@
 from numba import njit, prange
 import numpy as np
 from wise_scattering.physics_utilities import flat_to_matrix_coords
+from scipy.sparse.linalg import bicgstab, LinearOperator, gmres
 
 @njit(cache=True)
 def construct_coupling_matrix_jit(r_val, prefactor, n_channels,
@@ -268,3 +269,180 @@ def apply_K_P(psi_vec, eigvals, u_T, v_T):
         coeff = np.vdot(v_T[i], psi_contig)
         res += eigvals[i] * u_T[i] * coeff
     return res
+
+class SolverCounter:
+    """
+    A simple callback class to tally the total number of iterative solver 
+    iterations (e.g., Bi-CGSTAB) across multiple linear system evaluations.
+    
+    Attributes
+    ----------
+    n_iters : int
+        The running total of iterations expended by the solver.
+    """
+    def __init__(self):
+        self.n_iters = 0
+    def __call__(self, xk=None):
+        self.n_iters += 1
+
+@njit
+def apply_shifted_K_matvec(v, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data):
+    """
+    Computes the action of the shifted kernel operator (z * I - K) on a state vector.
+    
+    Parameters
+    ----------
+    v : np.ndarray
+        A flattened 1D array representing the state vector.
+    z : complex
+        The complex shift, corresponding to a quadrature point on the contour.
+    grid : np.ndarray
+        The radial spatial grid.
+    sqrt_w : np.ndarray
+        The square roots of the integration weights.
+    PREFACTOR : float
+        The reduced mass prefactor.
+    G_diag : np.ndarray
+        The diagonal elements of the reference Green's functions.
+    R_ratio : np.ndarray
+        The regular solution outward Numerov ratios.
+    pot_data, cent_data : tuple
+        Unpacked tuples containing sparse interaction matrix data.
+    radial_pot : np.ndarray
+        Dense radial potential matrix.
+
+    Returns
+    -------
+    np.ndarray
+        The resulting 1D complex vector after applying the shifted operator.
+    """
+    # 1. Compute the standard K * v
+    K_v = apply_K_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+    
+    # 2. Apply the shift and subtract
+    result = np.empty_like(v)
+    for i in range(len(v)):
+        result[i] = z * v[i] - K_v[i]
+        
+    return result
+
+def apply_contour_projector(v, K_op_shape, R_out, R_in, N_q_out, N_q_in, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, tol=1e-5, x_c_in=0.0):
+    """
+    Evaluates the contour integral for the divergent subspace projector acting on a vector.
+    
+    Parameters
+    ----------
+    v : np.ndarray
+        A flattened 1D array representing the state vector.
+    K_op_shape : tuple
+        The shape of the linear operator.
+    R_out : float
+        The radius of the outer integration ring (enclosing all divergent eigenvalues).
+    R_in : float
+        The radius of the inner integration ring.
+    N_q_out : int
+        Number of trapezoidal quadrature points on the outer ring.
+    N_q_in : int
+        Number of trapezoidal quadrature points on the inner ring.
+    grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data : 
+        Physical system and potential parameters required for the K operator.
+    tol : float, optional
+        Convergence tolerance for the internal Bi-CGSTAB linear solver (default is 1e-5).
+    x_c_in : float, optional
+        The center coordinate of the inner ring on the real axis (default is 0.0).
+        
+    Returns
+    -------
+    tuple
+        - P_v (np.ndarray): The projected vector containing only the divergent components.
+        - n_iters (int): The total number of Bi-CGSTAB iterations expended across all nodes.
+    """
+    theta_out = np.linspace(0, 2 * np.pi, N_q_out, endpoint=False)
+    d_theta = (2 * np.pi) / N_q_in
+    theta_in = np.linspace(0, 2 * np.pi, N_q_in, endpoint=False) + (d_theta / 2.0) # phase shift to increase the distance to the eigenvalues
+    
+    z_out = R_out * np.exp(1j * theta_out)
+    z_in = x_c_in + R_in * np.exp(1j * theta_in) # Applies the shift (0.0 by default)
+    
+    P_v = np.zeros_like(v, dtype=np.complex128)
+    counter = SolverCounter()
+    
+    for k in range(N_q_out):
+        z_curr = z_out[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        P_v += (z_curr / N_q_out) * y
+
+    for k in range(N_q_in):
+        z_curr = z_in[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        P_v -= ((z_curr - x_c_in) / N_q_in) * y
+        
+    return P_v, counter.n_iters
+
+def apply_contour_correction(v, K_op_shape, R_out, R_in, N_q_out, N_q_in, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, tol=1e-5, x_c_in=0.0):
+    """
+    Evaluates the contour integral for the divergent wavefunction correction (Stage 2).
+    
+    Parameters
+    ----------
+    v : np.ndarray
+        The regularized state vector to be corrected.
+    K_op_shape : tuple
+        The shape of the linear operator.
+    R_out : float
+        The radius of the outer integration ring.
+    R_in : float
+        The radius of the inner integration ring.
+    N_q_out : int
+        Number of trapezoidal quadrature points on the outer ring.
+    N_q_in : int
+        Number of trapezoidal quadrature points on the inner ring.
+    grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data : 
+        Physical system and potential parameters required for the K operator.
+    tol : float, optional
+        Convergence tolerance for the internal Bi-CGSTAB linear solver (default is 1e-5).
+    x_c_in : float, optional
+        The center coordinate of the inner ring on the real axis.
+        
+    Returns
+    -------
+    tuple
+        - correction (np.ndarray): The integrated wavefunction correction vector.
+        - n_iters (int): The total number of Bi-CGSTAB iterations expended across all nodes.
+    """
+    theta_out = np.linspace(0, 2 * np.pi, N_q_out, endpoint=False)
+    d_theta = (2 * np.pi) / N_q_in
+    theta_in = np.linspace(0, 2 * np.pi, N_q_in, endpoint=False) + (d_theta / 2.0) # phase shift to increase the distance to the eigenvalues
+    
+    z_out = R_out * np.exp(1j * theta_out)
+    z_in = x_c_in + R_in * np.exp(1j * theta_in) # Apply the shift
+    
+    correction = np.zeros_like(v, dtype=np.complex128)
+    counter = SolverCounter()
+    
+    for k in range(N_q_out):
+        z_curr = z_out[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        weight = (z_curr / N_q_out) * (z_curr / (1.0 - z_curr))
+        correction += weight * y
+
+    for k in range(N_q_in):
+        z_curr = z_in[k]
+        def matvec_wrapper(x, z=z_curr):
+            return apply_shifted_K_matvec(x, z, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        A = LinearOperator(K_op_shape, matvec=matvec_wrapper, dtype=np.complex128)
+        y, _ = bicgstab(A, v, tol=tol, callback=counter)
+        
+        weight = ((z_curr - x_c_in) / N_q_in) * (z_curr / (1.0 - z_curr))
+        correction -= weight * y
+        
+    return correction, counter.n_iters

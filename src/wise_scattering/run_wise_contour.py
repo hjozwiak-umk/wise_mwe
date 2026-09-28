@@ -140,6 +140,10 @@ def main():
         phase_shifts[c] = delta
         R_ratio[c, :] = Q_out + 0.0j
 
+    # Precompute forward_ratios for optimized sweeps
+    forward_ratios = np.zeros((n_channels, n_points), dtype=np.complex128)
+    forward_ratios[:, 1:] = (G_diag[:, 1:] / G_diag[:, :-1]) * R_ratio[:, 1:]
+
     # Define the source term (initial guess): pure incoming wave in the chosen channel
     u_0 = np.zeros((n_channels, n_points), dtype=np.complex128)
     u_0[incoming_idx, :] = u_reg_all[incoming_idx, :]
@@ -151,10 +155,10 @@ def main():
     size = n_channels * n_points
 
     def matvec(v): 
-        return apply_K_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        return apply_K_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, forward_ratios, pot_data, radial_pot, cent_data)
     
     def rmatvec(v):
-        return apply_KH_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data)
+        return apply_KH_matvec(v, grid, sqrt_w, PREFACTOR, G_diag, R_ratio, forward_ratios, pot_data, radial_pot, cent_data)
     
     K_op_shape = (size, size)
     K_op = LinearOperator((size, size), matvec=matvec, rmatvec=rmatvec, dtype=np.complex128)
@@ -182,7 +186,7 @@ def main():
         # 1. Evaluate the contour integral for the projector P_D acting on u_R_old
         P_D_y, inner_iters = apply_contour_projector(
             u_R_old, K_op_shape, R_out, R_in_1, N_q_outer, N_q_1, 
-            grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, 
+            grid, sqrt_w, PREFACTOR, G_diag, R_ratio, forward_ratios, pot_data, radial_pot, cent_data, 
             tol=solver_tol
         )
         total_inner_iters += inner_iters
@@ -207,7 +211,7 @@ def main():
     
     full_correction, stage2_iters = apply_contour_correction(
         u_R, K_op_shape, R_out, R_in_2, N_q_outer, N_q_2, 
-        grid, sqrt_w, PREFACTOR, G_diag, R_ratio, pot_data, radial_pot, cent_data, 
+        grid, sqrt_w, PREFACTOR, G_diag, R_ratio, forward_ratios, pot_data, radial_pot, cent_data, 
         tol=solver_tol, x_c_in=x_c_2
     )
 
